@@ -1,376 +1,484 @@
---- Tilt dev tool: hold W to dive, hold S to climb, each with its own settings
+--- Tilt dev tool: hold W to dive, hold S to climb (key required)
 
 local UserInputService = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
 local player = game.Players.LocalPlayer
 
--- Settings
-local TOGGLE_KEY = Enum.KeyCode.RightShift  -- shows/hides the panel
-local MAX_DEGREES = 90                       -- keep at or below 90
-local MIN_SPEED, MAX_SPEED = 10, 720         -- degrees per second
-local REQUIRE_AIRBORNE = true                -- false = tilt works in any humanoid state
-local EPSILON = 1e-3                         -- how far off (radians) before we correct
-
--- Live values (the UI changes these)
-local tiltDegrees = 15     -- W: dive angle (down)
-local tiltSpeed = 90       -- W: degrees per second
-local enabledDown = true
-
-local upDegrees = 15       -- S: climb angle (up)
-local upSpeed = 90         -- S: degrees per second
-local enabledUp = true
-
--- State
-local humanoid, root
-local ready = false
-local target = 0
-local current = 0
-local wHeld = false
-local sHeld = false
-local lastPressed = nil    -- "W" or "S", used if both are held at once
-local cframeConn
+local REQUIRED_KEY = "BACHO_SPECTRUM"
 
 ---------------------------------------------------------------------
--- Tilt logic
+-- The whole tool lives in here and only runs after the key is accepted
 ---------------------------------------------------------------------
-local function activeDirection()
-    if wHeld and sHeld then return lastPressed end
-    if wHeld then return "W" end
-    if sHeld then return "S" end
-    return nil
-end
+local function startTool()
+    -- Settings
+    local TOGGLE_KEY = Enum.KeyCode.RightShift  -- shows/hides the panel
+    local MAX_DEGREES = 90                       -- keep at or below 90
+    local MIN_SPEED, MAX_SPEED = 10, 720         -- degrees per second
+    local REQUIRE_AIRBORNE = true                -- false = tilt works in any humanoid state
+    local EPSILON = 1e-3                         -- how far off (radians) before we correct
 
-local function updateTarget()
-    local state = humanoid:GetState()
-    local airborne = state == Enum.HumanoidStateType.Freefall
-        or state == Enum.HumanoidStateType.Physics
+    -- Live values (the UI changes these)
+    local tiltDegrees = 15     -- W: dive angle (down)
+    local tiltSpeed = 90       -- W: degrees per second
+    local enabledDown = true
 
-    target = 0
-    local dir = activeDirection()
-    if not dir or not (airborne or not REQUIRE_AIRBORNE) then return end
+    local upDegrees = 15       -- S: climb angle (up)
+    local upSpeed = 90         -- S: degrees per second
+    local enabledUp = true
 
-    if dir == "W" and enabledDown then
-        target = -math.rad(tiltDegrees)   -- negative = down
-    elseif dir == "S" and enabledUp then
-        target = math.rad(upDegrees)      -- positive = up
-    end
-end
+    -- State
+    local humanoid, root
+    local ready = false
+    local target = 0
+    local current = 0
+    local wHeld = false
+    local sHeld = false
+    local lastPressed = nil    -- "W" or "S", used if both are held at once
+    local cframeConn
 
-local function stepTilt(dt)
-    -- Use the speed of the direction we're heading to (or returning from)
-    local reference = (target ~= 0) and target or current
-    local speed = (reference > 0) and upSpeed or tiltSpeed
-
-    local maxStep = math.rad(speed) * dt
-    local diff = target - current
-
-    if math.abs(diff) <= maxStep then
-        current = target
-    else
-        current = current + math.sign(diff) * maxStep
-    end
-end
-
-local function enforceTilt()
-    if math.abs(current) < 1e-4 then return end
-
-    local cf = root.CFrame
-    local pitch, yaw, roll = cf:ToEulerAnglesYXZ()
-
-    if math.abs(pitch - current) < EPSILON and math.abs(roll) < EPSILON then
-        return
+    -----------------------------------------------------------------
+    -- Tilt logic
+    -----------------------------------------------------------------
+    local function activeDirection()
+        if wHeld and sHeld then return lastPressed end
+        if wHeld then return "W" end
+        if sHeld then return "S" end
+        return nil
     end
 
-    root.CFrame = CFrame.new(cf.Position) * CFrame.Angles(0, yaw, 0) * CFrame.Angles(current, 0, 0)
-end
+    local function updateTarget()
+        local state = humanoid:GetState()
+        local airborne = state == Enum.HumanoidStateType.Freefall
+            or state == Enum.HumanoidStateType.Physics
 
----------------------------------------------------------------------
--- Character handling
----------------------------------------------------------------------
-local function bindCharacter(char)
-    ready = false
-    target, current = 0, 0
-    if cframeConn then cframeConn:Disconnect() end
+        target = 0
+        local dir = activeDirection()
+        if not dir or not (airborne or not REQUIRE_AIRBORNE) then return end
 
-    humanoid = char:WaitForChild("Humanoid")
-    root = char:WaitForChild("HumanoidRootPart")
-
-    -- While W or S is held, any outside change to our CFrame gets corrected immediately
-    cframeConn = root:GetPropertyChangedSignal("CFrame"):Connect(function()
-        if ready and (wHeld or sHeld) then
-            enforceTilt()
+        if dir == "W" and enabledDown then
+            target = -math.rad(tiltDegrees)   -- negative = down
+        elseif dir == "S" and enabledUp then
+            target = math.rad(upDegrees)      -- positive = up
         end
-    end)
-
-    ready = true
-end
-
----------------------------------------------------------------------
--- UI
----------------------------------------------------------------------
-local panel
-
-local function createSlider(parent, y, name, min, max, initial, accent, onChange)
-    local value = initial
-
-    local label = Instance.new("TextLabel")
-    label.Size = UDim2.new(0.5, 0, 0, 20)
-    label.Position = UDim2.new(0, 10, 0, y)
-    label.BackgroundTransparency = 1
-    label.Text = name
-    label.TextColor3 = Color3.new(1, 1, 1)
-    label.Font = Enum.Font.GothamMedium
-    label.TextSize = 14
-    label.TextXAlignment = Enum.TextXAlignment.Left
-    label.Parent = parent
-
-    local box = Instance.new("TextBox")
-    box.Size = UDim2.new(0, 64, 0, 22)
-    box.Position = UDim2.new(1, -74, 0, y)
-    box.BackgroundColor3 = Color3.fromRGB(50, 50, 58)
-    box.BorderSizePixel = 0
-    box.TextColor3 = Color3.new(1, 1, 1)
-    box.Font = Enum.Font.Gotham
-    box.TextSize = 13
-    box.ClearTextOnFocus = false
-    box.Parent = parent
-    Instance.new("UICorner", box).CornerRadius = UDim.new(0, 5)
-
-    local track = Instance.new("Frame")
-    track.Size = UDim2.new(1, -20, 0, 10)
-    track.Position = UDim2.new(0, 10, 0, y + 32)
-    track.BackgroundColor3 = Color3.fromRGB(70, 70, 78)
-    track.BorderSizePixel = 0
-    track.Parent = parent
-    Instance.new("UICorner", track).CornerRadius = UDim.new(1, 0)
-
-    local fill = Instance.new("Frame")
-    fill.BackgroundColor3 = accent
-    fill.BorderSizePixel = 0
-    fill.Parent = track
-    Instance.new("UICorner", fill).CornerRadius = UDim.new(1, 0)
-
-    local function setValue(v)
-        value = math.clamp(v, min, max)
-        fill.Size = UDim2.new((value - min) / (max - min), 0, 1, 0)
-        box.Text = string.format("%.1f", value)
-        onChange(value)
-    end
-    setValue(initial)
-
-    box.FocusLost:Connect(function()
-        local n = tonumber(box.Text)
-        setValue(n or value)
-    end)
-
-    local dragging = false
-    local function updateFromX(x)
-        local alpha = math.clamp((x - track.AbsolutePosition.X) / track.AbsoluteSize.X, 0, 1)
-        setValue(min + alpha * (max - min))
     end
 
-    track.InputBegan:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1
-            or input.UserInputType == Enum.UserInputType.Touch then
-            dragging = true
-            updateFromX(input.Position.X)
+    local function stepTilt(dt)
+        local reference = (target ~= 0) and target or current
+        local speed = (reference > 0) and upSpeed or tiltSpeed
+
+        local maxStep = math.rad(speed) * dt
+        local diff = target - current
+
+        if math.abs(diff) <= maxStep then
+            current = target
+        else
+            current = current + math.sign(diff) * maxStep
         end
-    end)
+    end
 
-    UserInputService.InputChanged:Connect(function(input)
-        if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement
-            or input.UserInputType == Enum.UserInputType.Touch) then
-            updateFromX(input.Position.X)
+    local function enforceTilt()
+        if math.abs(current) < 1e-4 then return end
+
+        local cf = root.CFrame
+        local pitch, yaw, roll = cf:ToEulerAnglesYXZ()
+
+        if math.abs(pitch - current) < EPSILON and math.abs(roll) < EPSILON then
+            return
+        end
+
+        root.CFrame = CFrame.new(cf.Position) * CFrame.Angles(0, yaw, 0) * CFrame.Angles(current, 0, 0)
+    end
+
+    -----------------------------------------------------------------
+    -- Character handling
+    -----------------------------------------------------------------
+    local function bindCharacter(char)
+        ready = false
+        target, current = 0, 0
+        if cframeConn then cframeConn:Disconnect() end
+
+        humanoid = char:WaitForChild("Humanoid")
+        root = char:WaitForChild("HumanoidRootPart")
+
+        cframeConn = root:GetPropertyChangedSignal("CFrame"):Connect(function()
+            if ready and (wHeld or sHeld) then
+                enforceTilt()
+            end
+        end)
+
+        ready = true
+    end
+
+    -----------------------------------------------------------------
+    -- UI
+    -----------------------------------------------------------------
+    local panel
+
+    local function createSlider(parent, y, name, min, max, initial, accent, onChange)
+        local value = initial
+
+        local label = Instance.new("TextLabel")
+        label.Size = UDim2.new(0.5, 0, 0, 20)
+        label.Position = UDim2.new(0, 10, 0, y)
+        label.BackgroundTransparency = 1
+        label.Text = name
+        label.TextColor3 = Color3.new(1, 1, 1)
+        label.Font = Enum.Font.GothamMedium
+        label.TextSize = 14
+        label.TextXAlignment = Enum.TextXAlignment.Left
+        label.Parent = parent
+
+        local box = Instance.new("TextBox")
+        box.Size = UDim2.new(0, 64, 0, 22)
+        box.Position = UDim2.new(1, -74, 0, y)
+        box.BackgroundColor3 = Color3.fromRGB(50, 50, 58)
+        box.BorderSizePixel = 0
+        box.TextColor3 = Color3.new(1, 1, 1)
+        box.Font = Enum.Font.Gotham
+        box.TextSize = 13
+        box.ClearTextOnFocus = false
+        box.Parent = parent
+        Instance.new("UICorner", box).CornerRadius = UDim.new(0, 5)
+
+        local track = Instance.new("Frame")
+        track.Size = UDim2.new(1, -20, 0, 10)
+        track.Position = UDim2.new(0, 10, 0, y + 32)
+        track.BackgroundColor3 = Color3.fromRGB(70, 70, 78)
+        track.BorderSizePixel = 0
+        track.Parent = parent
+        Instance.new("UICorner", track).CornerRadius = UDim.new(1, 0)
+
+        local fill = Instance.new("Frame")
+        fill.BackgroundColor3 = accent
+        fill.BorderSizePixel = 0
+        fill.Parent = track
+        Instance.new("UICorner", fill).CornerRadius = UDim.new(1, 0)
+
+        local function setValue(v)
+            value = math.clamp(v, min, max)
+            fill.Size = UDim2.new((value - min) / (max - min), 0, 1, 0)
+            box.Text = string.format("%.1f", value)
+            onChange(value)
+        end
+        setValue(initial)
+
+        box.FocusLost:Connect(function()
+            local n = tonumber(box.Text)
+            setValue(n or value)
+        end)
+
+        local dragging = false
+        local function updateFromX(x)
+            local alpha = math.clamp((x - track.AbsolutePosition.X) / track.AbsoluteSize.X, 0, 1)
+            setValue(min + alpha * (max - min))
+        end
+
+        track.InputBegan:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1
+                or input.UserInputType == Enum.UserInputType.Touch then
+                dragging = true
+                updateFromX(input.Position.X)
+            end
+        end)
+
+        UserInputService.InputChanged:Connect(function(input)
+            if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement
+                or input.UserInputType == Enum.UserInputType.Touch) then
+                updateFromX(input.Position.X)
+            end
+        end)
+
+        UserInputService.InputEnded:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1
+                or input.UserInputType == Enum.UserInputType.Touch then
+                dragging = false
+            end
+        end)
+    end
+
+    local function createSection(parent, y, name, accent, tiltInit, speedInit, setEnabled, setTilt, setSpeed)
+        local title = Instance.new("TextLabel")
+        title.Size = UDim2.new(1, -90, 0, 22)
+        title.Position = UDim2.new(0, 10, 0, y)
+        title.BackgroundTransparency = 1
+        title.Text = name
+        title.TextColor3 = accent
+        title.Font = Enum.Font.GothamBold
+        title.TextSize = 14
+        title.TextXAlignment = Enum.TextXAlignment.Left
+        title.Parent = parent
+
+        local btn = Instance.new("TextButton")
+        btn.Size = UDim2.new(0, 60, 0, 22)
+        btn.Position = UDim2.new(1, -70, 0, y)
+        btn.Font = Enum.Font.GothamBold
+        btn.TextSize = 12
+        btn.TextColor3 = Color3.new(1, 1, 1)
+        btn.Parent = parent
+        Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 5)
+
+        local on = true
+        local function refresh()
+            btn.Text = on and "ON" or "OFF"
+            btn.BackgroundColor3 = on
+                and Color3.fromRGB(35, 165, 89)
+                or Color3.fromRGB(190, 60, 60)
+        end
+        refresh()
+
+        btn.Activated:Connect(function()
+            on = not on
+            refresh()
+            setEnabled(on)
+        end)
+
+        createSlider(parent, y + 28, "Tilt (deg)", 0, MAX_DEGREES, tiltInit, accent, setTilt)
+        createSlider(parent, y + 82, "Speed (°/s)", MIN_SPEED, MAX_SPEED, speedInit, accent, setSpeed)
+    end
+
+    local function createUI()
+        local gui = Instance.new("ScreenGui")
+        gui.Name = "TiltDevTool"
+        gui.ResetOnSpawn = false
+        pcall(function() gui.Parent = game:GetService("CoreGui") end)
+        if not gui.Parent then gui.Parent = player:WaitForChild("PlayerGui") end
+
+        panel = Instance.new("Frame")
+        panel.Size = UDim2.new(0, 260, 0, 316)
+        panel.Position = UDim2.new(0, 20, 0.5, -158)
+        panel.BackgroundColor3 = Color3.fromRGB(30, 30, 34)
+        panel.BorderSizePixel = 0
+        panel.Parent = gui
+        Instance.new("UICorner", panel).CornerRadius = UDim.new(0, 8)
+
+        local header = Instance.new("Frame")
+        header.Size = UDim2.new(1, 0, 0, 34)
+        header.BackgroundColor3 = Color3.fromRGB(40, 40, 46)
+        header.BorderSizePixel = 0
+        header.Parent = panel
+        Instance.new("UICorner", header).CornerRadius = UDim.new(0, 8)
+
+        local headerTitle = Instance.new("TextLabel")
+        headerTitle.Size = UDim2.new(1, -20, 1, 0)
+        headerTitle.Position = UDim2.new(0, 10, 0, 0)
+        headerTitle.BackgroundTransparency = 1
+        headerTitle.Text = "Tilt Tool"
+        headerTitle.TextColor3 = Color3.new(1, 1, 1)
+        headerTitle.Font = Enum.Font.GothamBold
+        headerTitle.TextSize = 14
+        headerTitle.TextXAlignment = Enum.TextXAlignment.Left
+        headerTitle.Parent = header
+
+        createSection(panel, 42, "W - Dive (down)", Color3.fromRGB(88, 101, 242),
+            tiltDegrees, tiltSpeed,
+            function(on) enabledDown = on end,
+            function(v) tiltDegrees = v end,
+            function(v) tiltSpeed = v end)
+
+        local divider = Instance.new("Frame")
+        divider.Size = UDim2.new(1, -20, 0, 1)
+        divider.Position = UDim2.new(0, 10, 0, 174)
+        divider.BackgroundColor3 = Color3.fromRGB(60, 60, 68)
+        divider.BorderSizePixel = 0
+        divider.Parent = panel
+
+        createSection(panel, 182, "S - Climb (up)", Color3.fromRGB(240, 150, 50),
+            upDegrees, upSpeed,
+            function(on) enabledUp = on end,
+            function(v) upDegrees = v end,
+            function(v) upSpeed = v end)
+
+        local draggingPanel, dragStart, startPos = false, nil, nil
+
+        header.InputBegan:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1
+                or input.UserInputType == Enum.UserInputType.Touch then
+                draggingPanel = true
+                dragStart = input.Position
+                startPos = panel.Position
+            end
+        end)
+
+        UserInputService.InputChanged:Connect(function(input)
+            if draggingPanel and (input.UserInputType == Enum.UserInputType.MouseMovement
+                or input.UserInputType == Enum.UserInputType.Touch) then
+                local d = input.Position - dragStart
+                panel.Position = UDim2.new(
+                    startPos.X.Scale, startPos.X.Offset + d.X,
+                    startPos.Y.Scale, startPos.Y.Offset + d.Y
+                )
+            end
+        end)
+
+        UserInputService.InputEnded:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1
+                or input.UserInputType == Enum.UserInputType.Touch then
+                draggingPanel = false
+            end
+        end)
+    end
+
+    -----------------------------------------------------------------
+    -- Input (W key, S key, panel toggle key)
+    -----------------------------------------------------------------
+    UserInputService.InputBegan:Connect(function(input, processed)
+        if processed then return end
+        if input.UserInputType ~= Enum.UserInputType.Keyboard then return end
+
+        if input.KeyCode == Enum.KeyCode.W then
+            wHeld = true
+            lastPressed = "W"
+        elseif input.KeyCode == Enum.KeyCode.S then
+            sHeld = true
+            lastPressed = "S"
+        elseif input.KeyCode == TOGGLE_KEY and panel then
+            panel.Visible = not panel.Visible
         end
     end)
 
     UserInputService.InputEnded:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1
-            or input.UserInputType == Enum.UserInputType.Touch then
-            dragging = false
+        if input.UserInputType ~= Enum.UserInputType.Keyboard then return end
+
+        if input.KeyCode == Enum.KeyCode.W then
+            wHeld = false
+        elseif input.KeyCode == Enum.KeyCode.S then
+            sHeld = false
         end
     end)
-end
 
--- One block of the panel: title, ON/OFF button, tilt slider, speed slider
-local function createSection(parent, y, name, accent, tiltInit, speedInit, setEnabled, setTilt, setSpeed)
-    local title = Instance.new("TextLabel")
-    title.Size = UDim2.new(1, -90, 0, 22)
-    title.Position = UDim2.new(0, 10, 0, y)
-    title.BackgroundTransparency = 1
-    title.Text = name
-    title.TextColor3 = accent
-    title.Font = Enum.Font.GothamBold
-    title.TextSize = 14
-    title.TextXAlignment = Enum.TextXAlignment.Left
-    title.Parent = parent
-
-    local btn = Instance.new("TextButton")
-    btn.Size = UDim2.new(0, 60, 0, 22)
-    btn.Position = UDim2.new(1, -70, 0, y)
-    btn.Font = Enum.Font.GothamBold
-    btn.TextSize = 12
-    btn.TextColor3 = Color3.new(1, 1, 1)
-    btn.Parent = parent
-    Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 5)
-
-    local on = true
-    local function refresh()
-        btn.Text = on and "ON" or "OFF"
-        btn.BackgroundColor3 = on
-            and Color3.fromRGB(35, 165, 89)
-            or Color3.fromRGB(190, 60, 60)
+    -----------------------------------------------------------------
+    -- Main loops and startup
+    -----------------------------------------------------------------
+    local function guard()
+        return ready and root and root.Parent
     end
-    refresh()
 
-    btn.Activated:Connect(function()
-        on = not on
-        refresh()
-        setEnabled(on)
+    RunService.Heartbeat:Connect(function(dt)
+        if not guard() then return end
+        updateTarget()
+        stepTilt(dt)
+        enforceTilt()
     end)
 
-    createSlider(parent, y + 28, "Tilt (deg)", 0, MAX_DEGREES, tiltInit, accent, setTilt)
-    createSlider(parent, y + 82, "Speed (°/s)", MIN_SPEED, MAX_SPEED, speedInit, accent, setSpeed)
+    RunService.Stepped:Connect(function()
+        if guard() then enforceTilt() end
+    end)
+
+    RunService.RenderStepped:Connect(function()
+        if guard() then enforceTilt() end
+    end)
+
+    createUI()
+
+    task.spawn(bindCharacter, player.Character or player.CharacterAdded:Wait())
+    player.CharacterAdded:Connect(bindCharacter)
 end
 
-local function createUI()
+---------------------------------------------------------------------
+-- Key prompt
+---------------------------------------------------------------------
+local function showKeyPrompt(onSuccess)
     local gui = Instance.new("ScreenGui")
-    gui.Name = "TiltDevTool"
+    gui.Name = "TiltKeyPrompt"
     gui.ResetOnSpawn = false
     pcall(function() gui.Parent = game:GetService("CoreGui") end)
     if not gui.Parent then gui.Parent = player:WaitForChild("PlayerGui") end
 
-    panel = Instance.new("Frame")
-    panel.Size = UDim2.new(0, 260, 0, 316)
-    panel.Position = UDim2.new(0, 20, 0.5, -158)
-    panel.BackgroundColor3 = Color3.fromRGB(30, 30, 34)
-    panel.BorderSizePixel = 0
-    panel.Parent = gui
-    Instance.new("UICorner", panel).CornerRadius = UDim.new(0, 8)
+    local frame = Instance.new("Frame")
+    frame.Size = UDim2.new(0, 300, 0, 170)
+    frame.Position = UDim2.new(0.5, -150, 0.5, -85)
+    frame.BackgroundColor3 = Color3.fromRGB(30, 30, 34)
+    frame.BorderSizePixel = 0
+    frame.Parent = gui
+    Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 8)
 
-    -- Header (drag handle)
-    local header = Instance.new("Frame")
-    header.Size = UDim2.new(1, 0, 0, 34)
-    header.BackgroundColor3 = Color3.fromRGB(40, 40, 46)
-    header.BorderSizePixel = 0
-    header.Parent = panel
-    Instance.new("UICorner", header).CornerRadius = UDim.new(0, 8)
+    local stroke = Instance.new("UIStroke")
+    stroke.Color = Color3.fromRGB(88, 101, 242)
+    stroke.Thickness = 2
+    stroke.Parent = frame
 
-    local headerTitle = Instance.new("TextLabel")
-    headerTitle.Size = UDim2.new(1, -20, 1, 0)
-    headerTitle.Position = UDim2.new(0, 10, 0, 0)
-    headerTitle.BackgroundTransparency = 1
-    headerTitle.Text = "Tilt Tool"
-    headerTitle.TextColor3 = Color3.new(1, 1, 1)
-    headerTitle.Font = Enum.Font.GothamBold
-    headerTitle.TextSize = 14
-    headerTitle.TextXAlignment = Enum.TextXAlignment.Left
-    headerTitle.Parent = header
+    local title = Instance.new("TextLabel")
+    title.Size = UDim2.new(1, -20, 0, 28)
+    title.Position = UDim2.new(0, 10, 0, 10)
+    title.BackgroundTransparency = 1
+    title.Text = "Enter Key"
+    title.TextColor3 = Color3.new(1, 1, 1)
+    title.Font = Enum.Font.GothamBold
+    title.TextSize = 18
+    title.Parent = frame
 
-    -- W section (dive)
-    createSection(panel, 42, "W - Dive (down)", Color3.fromRGB(88, 101, 242),
-        tiltDegrees, tiltSpeed,
-        function(on) enabledDown = on end,
-        function(v) tiltDegrees = v end,
-        function(v) tiltSpeed = v end)
+    local box = Instance.new("TextBox")
+    box.Size = UDim2.new(1, -40, 0, 34)
+    box.Position = UDim2.new(0, 20, 0, 48)
+    box.BackgroundColor3 = Color3.fromRGB(50, 50, 58)
+    box.BorderSizePixel = 0
+    box.PlaceholderText = "Paste your key here"
+    box.PlaceholderColor3 = Color3.fromRGB(140, 140, 150)
+    box.Text = ""
+    box.TextColor3 = Color3.new(1, 1, 1)
+    box.Font = Enum.Font.Gotham
+    box.TextSize = 14
+    box.ClearTextOnFocus = false
+    box.Parent = frame
+    Instance.new("UICorner", box).CornerRadius = UDim.new(0, 6)
 
-    -- Divider
-    local divider = Instance.new("Frame")
-    divider.Size = UDim2.new(1, -20, 0, 1)
-    divider.Position = UDim2.new(0, 10, 0, 174)
-    divider.BackgroundColor3 = Color3.fromRGB(60, 60, 68)
-    divider.BorderSizePixel = 0
-    divider.Parent = panel
+    local status = Instance.new("TextLabel")
+    status.Size = UDim2.new(1, -40, 0, 18)
+    status.Position = UDim2.new(0, 20, 0, 88)
+    status.BackgroundTransparency = 1
+    status.Text = ""
+    status.TextColor3 = Color3.fromRGB(235, 90, 90)
+    status.Font = Enum.Font.GothamMedium
+    status.TextSize = 13
+    status.Parent = frame
 
-    -- S section (climb)
-    createSection(panel, 182, "S - Climb (up)", Color3.fromRGB(240, 150, 50),
-        upDegrees, upSpeed,
-        function(on) enabledUp = on end,
-        function(v) upDegrees = v end,
-        function(v) upSpeed = v end)
+    local submit = Instance.new("TextButton")
+    submit.Size = UDim2.new(0, 125, 0, 34)
+    submit.Position = UDim2.new(0, 20, 0, 118)
+    submit.BackgroundColor3 = Color3.fromRGB(88, 101, 242)
+    submit.Text = "Submit"
+    submit.TextColor3 = Color3.new(1, 1, 1)
+    submit.Font = Enum.Font.GothamBold
+    submit.TextSize = 14
+    submit.Parent = frame
+    Instance.new("UICorner", submit).CornerRadius = UDim.new(0, 6)
 
-    -- Drag the panel by its header
-    local draggingPanel, dragStart, startPos = false, nil, nil
+    local close = Instance.new("TextButton")
+    close.Size = UDim2.new(0, 125, 0, 34)
+    close.Position = UDim2.new(1, -145, 0, 118)
+    close.BackgroundColor3 = Color3.fromRGB(78, 80, 88)
+    close.Text = "Close"
+    close.TextColor3 = Color3.new(1, 1, 1)
+    close.Font = Enum.Font.GothamBold
+    close.TextSize = 14
+    close.Parent = frame
+    Instance.new("UICorner", close).CornerRadius = UDim.new(0, 6)
 
-    header.InputBegan:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1
-            or input.UserInputType == Enum.UserInputType.Touch then
-            draggingPanel = true
-            dragStart = input.Position
-            startPos = panel.Position
+    local unlocked = false
+
+    local function trySubmit()
+        if unlocked then return end
+
+        local entered = box.Text:match("^%s*(.-)%s*$")  -- trim spaces
+        if entered == REQUIRED_KEY then
+            unlocked = true
+            status.TextColor3 = Color3.fromRGB(35, 165, 89)
+            status.Text = "Key accepted"
+            task.wait(0.6)
+            gui:Destroy()
+            onSuccess()
+        else
+            status.TextColor3 = Color3.fromRGB(235, 90, 90)
+            status.Text = "Invalid key"
+            box.Text = ""
         end
-    end)
+    end
 
-    UserInputService.InputChanged:Connect(function(input)
-        if draggingPanel and (input.UserInputType == Enum.UserInputType.MouseMovement
-            or input.UserInputType == Enum.UserInputType.Touch) then
-            local d = input.Position - dragStart
-            panel.Position = UDim2.new(
-                startPos.X.Scale, startPos.X.Offset + d.X,
-                startPos.Y.Scale, startPos.Y.Offset + d.Y
-            )
-        end
+    submit.Activated:Connect(trySubmit)
+    box.FocusLost:Connect(function(enterPressed)
+        if enterPressed then trySubmit() end
     end)
-
-    UserInputService.InputEnded:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1
-            or input.UserInputType == Enum.UserInputType.Touch then
-            draggingPanel = false
-        end
-    end)
+    close.Activated:Connect(function() gui:Destroy() end)
 end
 
----------------------------------------------------------------------
--- Input (W key, S key, panel toggle key)
----------------------------------------------------------------------
-UserInputService.InputBegan:Connect(function(input, processed)
-    if processed then return end
-    if input.UserInputType ~= Enum.UserInputType.Keyboard then return end
-
-    if input.KeyCode == Enum.KeyCode.W then
-        wHeld = true
-        lastPressed = "W"
-    elseif input.KeyCode == Enum.KeyCode.S then
-        sHeld = true
-        lastPressed = "S"
-    elseif input.KeyCode == TOGGLE_KEY and panel then
-        panel.Visible = not panel.Visible
-    end
-end)
-
-UserInputService.InputEnded:Connect(function(input)
-    if input.UserInputType ~= Enum.UserInputType.Keyboard then return end
-
-    if input.KeyCode == Enum.KeyCode.W then
-        wHeld = false
-    elseif input.KeyCode == Enum.KeyCode.S then
-        sHeld = false
-    end
-end)
-
----------------------------------------------------------------------
--- Main loops and startup
----------------------------------------------------------------------
-local function guard()
-    return ready and root and root.Parent
-end
-
-RunService.Heartbeat:Connect(function(dt)
-    if not guard() then return end
-    updateTarget()
-    stepTilt(dt)
-    enforceTilt()
-end)
-
-RunService.Stepped:Connect(function()
-    if guard() then enforceTilt() end
-end)
-
-RunService.RenderStepped:Connect(function()
-    if guard() then enforceTilt() end
-end)
-
-createUI()
-
-task.spawn(bindCharacter, player.Character or player.CharacterAdded:Wait())
-player.CharacterAdded:Connect(bindCharacter)
+showKeyPrompt(startTool)
