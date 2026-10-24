@@ -1,107 +1,127 @@
+--- Tilt dev tool: hold W to ramp the tilt, then lock it there
+
 local UserInputService = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
 local player = game.Players.LocalPlayer
 
 -- Settings
-local tiltDegrees = 15      -- starting tilt (the slider changes this live)
-local MAX_DEGREES = 90      -- slider's right edge; keep at or below 90
-local smoothing = 55
+local TOGGLE_KEY = Enum.KeyCode.RightShift  -- shows/hides the panel
+local MAX_DEGREES = 90                       -- keep at or below 90
+local MIN_SPEED, MAX_SPEED = 10, 720         -- degrees per second
+local REQUIRE_AIRBORNE = true                -- false = tilt works in any humanoid state
+local EPSILON = 1e-3                         -- how far off (radians) before we correct
+
+-- Live values (the UI changes these)
+local tiltDegrees = 15
+local tiltSpeed = 90
+local enabled = true
 
 -- State
 local humanoid, root
-local ready = false         -- false while a new character is loading
-local target = 0            -- angle we want (radians)
-local current = 0           -- smoothed angle moving toward target
-local applied = 0           -- angle already added to the root part's rotation
+local ready = false
+local target = 0
+local current = 0
 local wHeld = false
-
----------------------------------------------------------------------
--- Character handling
----------------------------------------------------------------------
-local function bindCharacter(char)
-    ready = false
-    target, current, applied = 0, 0, 0
-
-    humanoid = char:WaitForChild("Humanoid")
-    root = char:WaitForChild("HumanoidRootPart")
-
-    ready = true
-end
+local cframeConn  -- listens for anything else changing our CFrame
 
 ---------------------------------------------------------------------
 -- Tilt logic
 ---------------------------------------------------------------------
 local function updateTarget()
     local state = humanoid:GetState()
-    if state == Enum.HumanoidStateType.Freefall or state == Enum.HumanoidStateType.Physics then
-        target = wHeld and -math.rad(tiltDegrees) or 0
+    local airborne = state == Enum.HumanoidStateType.Freefall
+        or state == Enum.HumanoidStateType.Physics
+
+    if enabled and wHeld and (airborne or not REQUIRE_AIRBORNE) then
+        target = -math.rad(tiltDegrees)
     else
         target = 0
     end
 end
 
-local function applyTilt(dt)
-    current = current + (target - current) * math.clamp(dt * smoothing, 0, 1)
+local function stepTilt(dt)
+    local maxStep = math.rad(tiltSpeed) * dt
+    local diff = target - current
 
-    local delta = current - applied
-    if delta ~= 0 then
-        root.CFrame = root.CFrame * CFrame.Angles(delta, 0, 0)
-        applied = current
+    if math.abs(diff) <= maxStep then
+        current = target
+    else
+        current = current + math.sign(diff) * maxStep
     end
 end
 
----------------------------------------------------------------------
--- Input (W key)
----------------------------------------------------------------------
-UserInputService.InputBegan:Connect(function(input, processed)
-    if processed then return end
-    if input.UserInputType == Enum.UserInputType.Keyboard and input.KeyCode == Enum.KeyCode.W then
-        wHeld = true
+-- Writes the exact pitch, but only if something has moved us off it
+local function enforceTilt()
+    if math.abs(current) < 1e-4 then return end  -- no tilt wanted, leave the game alone
+
+    local cf = root.CFrame
+    local pitch, yaw, roll = cf:ToEulerAnglesYXZ()
+
+    if math.abs(pitch - current) < EPSILON and math.abs(roll) < EPSILON then
+        return  -- already correct, nothing to fix
     end
-end)
 
-UserInputService.InputEnded:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.Keyboard and input.KeyCode == Enum.KeyCode.W then
-        wHeld = false
-    end
-end)
+    root.CFrame = CFrame.new(cf.Position) * CFrame.Angles(0, yaw, 0) * CFrame.Angles(current, 0, 0)
+end
 
 ---------------------------------------------------------------------
--- Slider UI
+-- Character handling
 ---------------------------------------------------------------------
-local function createTiltUI()
-    local gui = Instance.new("ScreenGui")
-    gui.Name = "TiltUI"
-    gui.ResetOnSpawn = false
-    pcall(function() gui.Parent = game:GetService("CoreGui") end)
-    if not gui.Parent then gui.Parent = player:WaitForChild("PlayerGui") end
+local function bindCharacter(char)
+    ready = false
+    target, current = 0, 0
+    if cframeConn then cframeConn:Disconnect() end
 
-    local frame = Instance.new("Frame")
-    frame.Size = UDim2.new(0, 240, 0, 70)
-    frame.Position = UDim2.new(0, 20, 0.5, -35)
-    frame.BackgroundColor3 = Color3.fromRGB(30, 30, 34)
-    frame.BorderSizePixel = 0
-    frame.Active = true
-    frame.Draggable = true  -- deprecated but works in most executors
-    frame.Parent = gui
-    Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 8)
+    humanoid = char:WaitForChild("Humanoid")
+    root = char:WaitForChild("HumanoidRootPart")
+
+    -- While W is held, any change to our CFrame (game or server) gets corrected immediately
+    cframeConn = root:GetPropertyChangedSignal("CFrame"):Connect(function()
+        if ready and wHeld and enabled then
+            enforceTilt()
+        end
+    end)
+
+    ready = true
+end
+
+---------------------------------------------------------------------
+-- UI
+---------------------------------------------------------------------
+local panel
+
+local function createSlider(parent, y, name, min, max, initial, onChange)
+    local value = initial
 
     local label = Instance.new("TextLabel")
-    label.Size = UDim2.new(1, -20, 0, 24)
-    label.Position = UDim2.new(0, 10, 0, 6)
+    label.Size = UDim2.new(0.5, 0, 0, 20)
+    label.Position = UDim2.new(0, 10, 0, y)
     label.BackgroundTransparency = 1
+    label.Text = name
     label.TextColor3 = Color3.new(1, 1, 1)
     label.Font = Enum.Font.GothamMedium
     label.TextSize = 14
     label.TextXAlignment = Enum.TextXAlignment.Left
-    label.Parent = frame
+    label.Parent = parent
+
+    local box = Instance.new("TextBox")
+    box.Size = UDim2.new(0, 64, 0, 22)
+    box.Position = UDim2.new(1, -74, 0, y)
+    box.BackgroundColor3 = Color3.fromRGB(50, 50, 58)
+    box.BorderSizePixel = 0
+    box.TextColor3 = Color3.new(1, 1, 1)
+    box.Font = Enum.Font.Gotham
+    box.TextSize = 13
+    box.ClearTextOnFocus = false
+    box.Parent = parent
+    Instance.new("UICorner", box).CornerRadius = UDim.new(0, 5)
 
     local track = Instance.new("Frame")
-    track.Size = UDim2.new(1, -20, 0, 8)
-    track.Position = UDim2.new(0, 10, 0, 44)
+    track.Size = UDim2.new(1, -20, 0, 10)
+    track.Position = UDim2.new(0, 10, 0, y + 32)
     track.BackgroundColor3 = Color3.fromRGB(70, 70, 78)
     track.BorderSizePixel = 0
-    track.Parent = frame
+    track.Parent = parent
     Instance.new("UICorner", track).CornerRadius = UDim.new(1, 0)
 
     local fill = Instance.new("Frame")
@@ -110,17 +130,23 @@ local function createTiltUI()
     fill.Parent = track
     Instance.new("UICorner", fill).CornerRadius = UDim.new(1, 0)
 
-    local function setValue(deg)
-        tiltDegrees = math.clamp(deg, 0, MAX_DEGREES)
-        fill.Size = UDim2.new(tiltDegrees / MAX_DEGREES, 0, 1, 0)
-        label.Text = string.format("Tilt: %.1f°", tiltDegrees)
+    local function setValue(v)
+        value = math.clamp(v, min, max)
+        fill.Size = UDim2.new((value - min) / (max - min), 0, 1, 0)
+        box.Text = string.format("%.1f", value)
+        onChange(value)
     end
-    setValue(tiltDegrees)
+    setValue(initial)
+
+    box.FocusLost:Connect(function()
+        local n = tonumber(box.Text)
+        setValue(n or value)
+    end)
 
     local dragging = false
     local function updateFromX(x)
         local alpha = math.clamp((x - track.AbsolutePosition.X) / track.AbsoluteSize.X, 0, 1)
-        setValue(alpha * MAX_DEGREES)
+        setValue(min + alpha * (max - min))
     end
 
     track.InputBegan:Connect(function(input)
@@ -146,16 +172,141 @@ local function createTiltUI()
     end)
 end
 
+local function createUI()
+    local gui = Instance.new("ScreenGui")
+    gui.Name = "TiltDevTool"
+    gui.ResetOnSpawn = false
+    pcall(function() gui.Parent = game:GetService("CoreGui") end)
+    if not gui.Parent then gui.Parent = player:WaitForChild("PlayerGui") end
+
+    panel = Instance.new("Frame")
+    panel.Size = UDim2.new(0, 260, 0, 170)
+    panel.Position = UDim2.new(0, 20, 0.5, -85)
+    panel.BackgroundColor3 = Color3.fromRGB(30, 30, 34)
+    panel.BorderSizePixel = 0
+    panel.Parent = gui
+    Instance.new("UICorner", panel).CornerRadius = UDim.new(0, 8)
+
+    local header = Instance.new("Frame")
+    header.Size = UDim2.new(1, 0, 0, 34)
+    header.BackgroundColor3 = Color3.fromRGB(40, 40, 46)
+    header.BorderSizePixel = 0
+    header.Parent = panel
+    Instance.new("UICorner", header).CornerRadius = UDim.new(0, 8)
+
+    local title = Instance.new("TextLabel")
+    title.Size = UDim2.new(1, -90, 1, 0)
+    title.Position = UDim2.new(0, 10, 0, 0)
+    title.BackgroundTransparency = 1
+    title.Text = "Tilt Tool"
+    title.TextColor3 = Color3.new(1, 1, 1)
+    title.Font = Enum.Font.GothamBold
+    title.TextSize = 14
+    title.TextXAlignment = Enum.TextXAlignment.Left
+    title.Parent = header
+
+    local toggleBtn = Instance.new("TextButton")
+    toggleBtn.Size = UDim2.new(0, 60, 0, 22)
+    toggleBtn.Position = UDim2.new(1, -70, 0.5, -11)
+    toggleBtn.Font = Enum.Font.GothamBold
+    toggleBtn.TextSize = 12
+    toggleBtn.TextColor3 = Color3.new(1, 1, 1)
+    toggleBtn.Parent = header
+    Instance.new("UICorner", toggleBtn).CornerRadius = UDim.new(0, 5)
+
+    local function refreshToggle()
+        toggleBtn.Text = enabled and "ON" or "OFF"
+        toggleBtn.BackgroundColor3 = enabled
+            and Color3.fromRGB(35, 165, 89)
+            or Color3.fromRGB(190, 60, 60)
+    end
+    refreshToggle()
+
+    toggleBtn.Activated:Connect(function()
+        enabled = not enabled
+        refreshToggle()
+    end)
+
+    createSlider(panel, 44, "Tilt (deg)", 0, MAX_DEGREES, tiltDegrees, function(v)
+        tiltDegrees = v
+    end)
+    createSlider(panel, 106, "Speed (°/s)", MIN_SPEED, MAX_SPEED, tiltSpeed, function(v)
+        tiltSpeed = v
+    end)
+
+    local draggingPanel, dragStart, startPos = false, nil, nil
+
+    header.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+            or input.UserInputType == Enum.UserInputType.Touch then
+            draggingPanel = true
+            dragStart = input.Position
+            startPos = panel.Position
+        end
+    end)
+
+    UserInputService.InputChanged:Connect(function(input)
+        if draggingPanel and (input.UserInputType == Enum.UserInputType.MouseMovement
+            or input.UserInputType == Enum.UserInputType.Touch) then
+            local d = input.Position - dragStart
+            panel.Position = UDim2.new(
+                startPos.X.Scale, startPos.X.Offset + d.X,
+                startPos.Y.Scale, startPos.Y.Offset + d.Y
+            )
+        end
+    end)
+
+    UserInputService.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+            or input.UserInputType == Enum.UserInputType.Touch then
+            draggingPanel = false
+        end
+    end)
+end
+
 ---------------------------------------------------------------------
--- Main loop and startup
+-- Input (W key + panel toggle key)
 ---------------------------------------------------------------------
-RunService.Heartbeat:Connect(function(dt)
-    if not ready or not root or not root.Parent then return end
-    updateTarget()
-    applyTilt(dt)
+UserInputService.InputBegan:Connect(function(input, processed)
+    if processed then return end
+    if input.UserInputType ~= Enum.UserInputType.Keyboard then return end
+
+    if input.KeyCode == Enum.KeyCode.W then
+        wHeld = true
+    elseif input.KeyCode == TOGGLE_KEY and panel then
+        panel.Visible = not panel.Visible
+    end
 end)
 
-createTiltUI()
+UserInputService.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.Keyboard and input.KeyCode == Enum.KeyCode.W then
+        wHeld = false
+    end
+end)
+
+---------------------------------------------------------------------
+-- Main loops and startup
+---------------------------------------------------------------------
+local function guard()
+    return ready and root and root.Parent
+end
+
+RunService.Heartbeat:Connect(function(dt)
+    if not guard() then return end
+    updateTarget()
+    stepTilt(dt)
+    enforceTilt()
+end)
+
+RunService.Stepped:Connect(function()
+    if guard() then enforceTilt() end
+end)
+
+RunService.RenderStepped:Connect(function()
+    if guard() then enforceTilt() end
+end)
+
+createUI()
 
 task.spawn(bindCharacter, player.Character or player.CharacterAdded:Wait())
 player.CharacterAdded:Connect(bindCharacter)
