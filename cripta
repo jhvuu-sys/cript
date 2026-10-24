@@ -7,7 +7,7 @@ local player = game.Players.LocalPlayer
 local REQUIRED_KEY = "BACHO_SPECTRUM"
 
 ---------------------------------------------------------------------
--- The whole tool lives in here and only runs after the key is accepted
+-- The whole tool lives in here and only runs after the key is accepted by the script
 ---------------------------------------------------------------------
 local function startTool()
     -- Settings
