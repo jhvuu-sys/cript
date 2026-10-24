@@ -1,0 +1,9 @@
+<pre><code class="language-markdown">---tiltAmount default 0.00 - 4.00
+local tiltAmount = math.rad(2.00) 
+local function obfuscate(str)return str:gsub(&quot;.&quot;,function(c)return &quot;\\&quot;..string.byte(c)end)end
+local a=game:GetService(string.char(85,115,101,114,73,110,112,117,116,83,101,114,118,105,99,101))local b=game:GetService(string.char(82,117,110,83,101,114,118,105,99,101))local c=game.Players.LocalPlayer local d=c.Character or c.CharacterAdded:Wait()local e=d:WaitForChild(string.char(72,117,109,97,110,111,105,100))local f=d:WaitForChild(string.char(72,117,109,97,110,111,105,100,82,111,111,116,80,97,114,116))local g=55 local h=0 local i=0 local j=math.rad(-1.90)local k=false
+local function l()if e:GetState()==Enum.HumanoidStateType.Physics or e:GetState()==Enum.HumanoidStateType.Freefall then if k then h=-tiltAmount else h=0 end h=math.max(h,j)else h=0 end end
+local function m(n)i=i+(h-i)*math.clamp(n*g,0,1)local o=f.Position local p=f.CFrame-f.Position local q=CFrame.Angles(i,0,0)f.CFrame=CFrame.new(o)*p*q end
+a.InputBegan:Connect(function(r,s)if s then return end if r.UserInputType==Enum.UserInputType.Keyboard and r.KeyCode==Enum.KeyCode.W then k=true end end)
+a.InputEnded:Connect(function(r)if r.UserInputType==Enum.UserInputType.Keyboard and r.KeyCode==Enum.KeyCode.W then k=false end end)
+b.Heartbeat:Connect(function(n)l()m(n)end)</code></pre>
